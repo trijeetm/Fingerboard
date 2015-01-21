@@ -6,11 +6,20 @@
 //  Copyright (c) 2015 Trijeet Mukhopadhyay. All rights reserved.
 //
 
+#undef PI
+#undef TWO_PI
+
+// stk includes
+#import "Clarinet.h"
+
+#import <vector>
+
 #import "ViewController.h"
 #import <math.h>
 #import "mo-audio.h"
 #import "mo-touch.h"
 #import "mo-fun.h"
+
 
 @interface ViewController ()
 
@@ -29,21 +38,53 @@ Float32 g_t = 0.0;
 Float32 g_f = 0;
 Float32 g_micGain = 0;
 
+int lowestNote = 4 * 12;
+float micCutoff = 0.2;
+float gainBoost = 0;
+stk::Clarinet *instrument;
+
+std::vector <int> scale;
+
 // the audio callback
 void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 {
+    // input monitor
     float inputAggregator = 0;
+    
+    float gain = g_micGain / 75.0;
+    
+    // instrument params
+    if ((gain > micCutoff) && (g_f != 0)) {
+        
+        float _gain = gainBoost + gain - micCutoff;
+//        NSLog( @"gain: %f", _gain);
+        
+        if (_gain < 2)
+            instrument->noteOn(g_f, _gain);
+        else
+            instrument->noteOn(g_f, 2);
+        
+    }
+//        instrument->noteOn(g_f, 0.5);
+    else
+        instrument->noteOff(0.5);
+    
     // loop over frames
     for( UInt32 i = 0; i < frameSize; i++ )
     {
+        // instrument params
+//        instrument->noteOn(g_f, (g_micGain / 50));
+        
+        // mic monitor
         inputAggregator += fabs(buffer[i*2]) + fabs(buffer[i*2+1]);
-        // generate sine wave
-        buffer[i*2] = buffer[i*2+1] = ::sin(TWO_PI * g_f * g_t / SRATE);
+        
+        // synthesize
+        buffer[i*2] = buffer[i*2+1] = instrument->tick();
+        
         // advance time
         g_t += 1.0;
     }
-    g_micGain = inputAggregator / frameSize;
-    NSLog( @"gain: %f", g_micGain);
+    g_micGain = inputAggregator + (0.5 * g_micGain);
 }
 
 //float midiToFreq(int midi) {
@@ -59,15 +100,20 @@ int touchToFreq(float x, float y) {
     CGRect screenRect = [[UIScreen mainScreen] bounds];
     CGFloat screenWidth = screenRect.size.width;
     CGFloat screenHeight = screenRect.size.height;
+    x = screenWidth - x;
+    y = screenHeight - y;
     int midi;
-    int octaveOffset = 4 * 12;
-    int notesPerStrip = 12;
-    if (x <= screenWidth / 2) {
-        midi =  ((y / screenHeight) * notesPerStrip) + octaveOffset;
-    }
-    else {
-        midi = ((y / screenHeight) * notesPerStrip) + octaveOffset + notesPerStrip;
-    }
+    int octaveOffset = 4 * 12 + scale[0];
+    int notesPerStrip = (int)scale.size();
+    int offsetPosition = y / (screenHeight / notesPerStrip);
+    midi = octaveOffset + scale[offsetPosition];
+    NSLog(@"midi: %d", midi);
+//    if (x <= screenWidth / 2) {
+//        midi =  ((y / screenHeight) * notesPerStrip) + octaveOffset;
+//    }
+//    else {
+//        midi = ((y / screenHeight) * notesPerStrip) + octaveOffset + notesPerStrip;
+//    }
 //    NSLog( @"midi: %d", midi );
 //    NSLog( @"freq: %f", midiToFreq(midi) );
     return MoFun::midi2freq(midi);
@@ -84,7 +130,7 @@ void touch_callback( NSSet * touches, UIView * view,
     
     // number of touches in set
     NSUInteger n = [touches count];
-    NSLog( @"total number of touches: %d", (int)n );
+//    NSLog( @"total number of touches: %d", (int)n );
 
     
     // iterate over all touch events
@@ -101,6 +147,7 @@ void touch_callback( NSSet * touches, UIView * view,
             case UITouchPhaseBegan:
             {
 //                NSLog( @"touch began... %f %f", pt.x, pt.y );
+//                instrument->noteOn(touchToFreq(pt.x, pt.y), g_micGain / 100);
                 g_f = touchToFreq(pt.x, pt.y);
                 break;
             }
@@ -113,18 +160,20 @@ void touch_callback( NSSet * touches, UIView * view,
             {
 //                NSLog( @"touch moved... %f %f", pt.x, pt.y );
                 g_f = touchToFreq(pt.x, pt.y);
+//                instrument->noteOn(touchToFreq(pt.x, pt.y), g_micGain / 100);
                 break;
             }
                 // ended or cancelled
             case UITouchPhaseEnded:
             {
-//                g_f = 0;
+                g_f = 0;
 //                NSLog( @"touch ended... %f %f", pt.x, pt.y );
                 break;
             }
             case UITouchPhaseCancelled:
             {
-//                g_f = 0;
+                g_f = 0;
+//                instrument->noteOff(0.5);
 //                NSLog( @"touch cancelled... %f %f", pt.x, pt.y );
                 break;
             }
@@ -152,6 +201,21 @@ void touch_callback( NSSet * touches, UIView * view,
     NSLog( @"starting real-time audio..." );
     
     // init the audio layer
+    
+    // init instrument
+    instrument = new stk::Clarinet(MoFun::midi2freq(lowestNote));
+    instrument->setFrequency(0);
+    
+    // init scale
+    scale.push_back(0);
+    scale.push_back(2);
+    scale.push_back(4);
+    scale.push_back(5);
+    scale.push_back(7);
+    scale.push_back(9);
+    scale.push_back(11);
+    
+    
     bool result = MoAudio::init( SRATE, 1024, 2 );
     if( !result )
     {
