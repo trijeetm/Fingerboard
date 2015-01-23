@@ -11,9 +11,12 @@
 
 // stk includes
 #import "Clarinet.h"
+#import "ADSR.h"
 
+// stdlib
 #import <vector>
 
+// custom
 #import "ViewController.h"
 #import <math.h>
 #import "mo-audio.h"
@@ -39,36 +42,46 @@ Float32 g_f = 0;
 Float32 g_micGain = 0;
 
 int lowestNote = 4 * 12;
-float micCutoff = 0.2;
+float micCutoff = .1;
 float gainBoost = 0;
+
 stk::Clarinet *instrument;
+stk::ADSR *adsr;
+float g_attack = 0.1;
+float g_release = 0.5;
+int g_vibratoRange = 1;
+float g_vibratoSensitivity = 0;
+
+// leaky integrator
+float g_factor = 0.9995;
+float g_input = 0;
+float g_lastInput = 0;
+float g_output = 0;
+float g_lastOutput = 0;
+
+bool g_isBlowing = false;
 
 std::vector <int> scale;
 
 // the audio callback
 void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 {
-    // input monitor
-    float inputAggregator = 0;
+//    if (g_f != 0)
+//        adsr->keyOn();
+//    else
+//        adsr->keyOff();
     
-    float gain = g_micGain / 75.0;
-    
-    // instrument params
-    if ((gain > micCutoff) && (g_f != 0)) {
-        
-        float _gain = gainBoost + gain - micCutoff;
-//        NSLog( @"gain: %f", _gain);
-        
-        if (_gain < 2)
-            instrument->noteOn(g_f, _gain);
-        else
-            instrument->noteOn(g_f, 2);
-        
+    if( !g_isBlowing )
+    {
+        instrument->startBlowing(0,.5);
+        g_isBlowing = true;
     }
-//        instrument->noteOn(g_f, 0.5);
-    else
-        instrument->noteOff(0.5);
     
+//    if( g_f > .1 ) instrument->setFrequency( g_f );
+
+    instrument->setFrequency( g_f );
+    
+    NSLog( @"output: %f", g_output );
     // loop over frames
     for( UInt32 i = 0; i < frameSize; i++ )
     {
@@ -76,15 +89,43 @@ void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 //        instrument->noteOn(g_f, (g_micGain / 50));
         
         // mic monitor
-        inputAggregator += fabs(buffer[i*2]) + fabs(buffer[i*2+1]);
+        g_lastOutput = g_output;
+        g_input = buffer[i*2] * buffer[i*2]; // + fabs(buffer[i*2+1]);
+        g_output = g_input * sqrt((1 - g_factor)) + (g_factor * g_lastOutput);
+//        NSLog(@"gain: %f", g_input);
+
+        
+        // input monitor
+//        float inputAggregator = 0;
+        
+        float gain = g_output;
+        
+//        // instrument params
+//        if ((gain > micCutoff) && (g_f != 0) && !g_isBlowing) {
+////            float _gain = gainBoost + gain - micCutoff;
+////                    NSLog( @"gain: %f", _gain);
+//            
+////            instrument->setFrequency(g_f);
+//            instrument->startBlowing( 1, .1 );
+//            //instrument->startBlowing(_gain, 0.1);
+////            instrument->noteOn(g_f, 1);
+//            g_isBlowing = true;
+//        }
+//        else {
+//            instrument->stopBlowing(0.9);
+//            g_isBlowing = false;
+////            instrument->noteOff(0);
+//        }
         
         // synthesize
-        buffer[i*2] = buffer[i*2+1] = instrument->tick();
+        buffer[i*2] = buffer[i*2+1] = instrument->tick() * g_output;
+//        buffer[i*2] = buffer[i*2+1] = instrument->tick() * adsr->tick();
+//        buffer[i*2] = buffer[i*2+1] = instrument->tick();
         
         // advance time
         g_t += 1.0;
     }
-    g_micGain = inputAggregator + (0.5 * g_micGain);
+//    g_micGain = inputAggregator + (0.75 * g_micGain);
 }
 
 //float midiToFreq(int midi) {
@@ -96,26 +137,23 @@ void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 //    return freq;
 //}
 
-int touchToFreq(float x, float y) {
+int touchToFreq(float x, float y, bool vibrato = false) {
     CGRect screenRect = [[UIScreen mainScreen] bounds];
     CGFloat screenWidth = screenRect.size.width;
     CGFloat screenHeight = screenRect.size.height;
     x = screenWidth - x;
     y = screenHeight - y;
     int midi;
-    int octaveOffset = 4 * 12 + scale[0];
+    int octaveOffset = lowestNote + scale[0];
     int notesPerStrip = (int)scale.size();
-    int offsetPosition = y / (screenHeight / notesPerStrip);
-    midi = octaveOffset + scale[offsetPosition];
-    NSLog(@"midi: %d", midi);
-//    if (x <= screenWidth / 2) {
-//        midi =  ((y / screenHeight) * notesPerStrip) + octaveOffset;
-//    }
-//    else {
-//        midi = ((y / screenHeight) * notesPerStrip) + octaveOffset + notesPerStrip;
-//    }
-//    NSLog( @"midi: %d", midi );
-//    NSLog( @"freq: %f", midiToFreq(midi) );
+    float stripWidth = screenHeight / notesPerStrip;
+    int offsetPosition = y / stripWidth;
+    midi = octaveOffset + scale[offsetPosition] + ((int)(x / (screenWidth / 2)) * 12);
+    if (vibrato) {
+        float fingerOffset = fmodf(y, stripWidth) - (stripWidth / 2);
+//        NSLog(@"vibrato: %f", fingerOffset);
+        return MoFun::midi2freq(midi) + (MoFun::midi2freq(g_vibratoRange) * (fingerOffset / (stripWidth / 2)) * g_vibratoSensitivity);
+    }
     return MoFun::midi2freq(midi);
 }
 
@@ -159,7 +197,7 @@ void touch_callback( NSSet * touches, UIView * view,
             case UITouchPhaseMoved:
             {
 //                NSLog( @"touch moved... %f %f", pt.x, pt.y );
-                g_f = touchToFreq(pt.x, pt.y);
+                g_f = touchToFreq(pt.x, pt.y, true);
 //                instrument->noteOn(touchToFreq(pt.x, pt.y), g_micGain / 100);
                 break;
             }
@@ -206,6 +244,10 @@ void touch_callback( NSSet * touches, UIView * view,
     instrument = new stk::Clarinet(MoFun::midi2freq(lowestNote));
     instrument->setFrequency(0);
     
+    adsr = new stk::ADSR();
+    adsr->setReleaseTime(g_release);
+    adsr->setAttackTime(g_attack);
+    
     // init scale
     scale.push_back(0);
     scale.push_back(2);
@@ -214,9 +256,10 @@ void touch_callback( NSSet * touches, UIView * view,
     scale.push_back(7);
     scale.push_back(9);
     scale.push_back(11);
+    scale.push_back(12);
     
     
-    bool result = MoAudio::init( SRATE, 1024, 2 );
+    bool result = MoAudio::init( SRATE, 384, 2 );
     if( !result )
     {
         // something went wrong
