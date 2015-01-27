@@ -12,6 +12,7 @@
 // stk includes
 #import "Clarinet.h"
 #import "ADSR.h"
+#import "JCRev.h"
 
 // stdlib
 #import <vector>
@@ -23,17 +24,6 @@
 #import "mo-touch.h"
 #import "mo-fun.h"
 
-
-@interface ViewController ()
-
-@end
-
-
-@interface ViewController ()
-
-@end
-
-
 // global define
 #define SRATE 44100
 // global variables
@@ -42,15 +32,17 @@ Float32 g_f = 0;
 Float32 g_micGain = 0;
 
 int lowestNote = 4 * 12;
-float micCutoff = .1;
+float micCutoff = 0.0001;
 float gainBoost = 0;
 
 stk::Clarinet *instrument;
 stk::ADSR *adsr;
 float g_attack = 0.1;
 float g_release = 0.5;
-int g_vibratoRange = 1;
-float g_vibratoSensitivity = 0;
+float g_vibratoRate = 40;
+float g_vibratoGain = 0;
+stk::JCRev *rev;
+float g_revDecay = 1;
 
 // leaky integrator
 float g_factor = 0.9995;
@@ -63,6 +55,16 @@ bool g_isBlowing = false;
 
 std::vector <int> scale;
 
+@interface ViewController ()
+
+@end
+
+
+@interface ViewController ()
+
+@end
+
+
 // the audio callback
 void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 {
@@ -71,17 +73,24 @@ void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 //    else
 //        adsr->keyOff();
     
-    if( !g_isBlowing )
-    {
-        instrument->startBlowing(0,.5);
-        g_isBlowing = true;
-    }
+//    if( !g_isBlowing )
+//    {
+//        instrument->startBlowing(0, 0.5);
+//        g_isBlowing = true;
+//    }
     
 //    if( g_f > .1 ) instrument->setFrequency( g_f );
 
     instrument->setFrequency( g_f );
+    if (g_output > micCutoff)
+        instrument->startBlowing(1, 1);
+    else
+        instrument->stopBlowing(0.25);
     
-    NSLog( @"output: %f", g_output );
+    instrument->controlChange(1, g_vibratoGain);
+    instrument->controlChange(11, g_vibratoRate);
+    
+//    NSLog( @"output: %f", g_output );
     // loop over frames
     for( UInt32 i = 0; i < frameSize; i++ )
     {
@@ -118,7 +127,7 @@ void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 //        }
         
         // synthesize
-        buffer[i*2] = buffer[i*2+1] = instrument->tick() * g_output;
+        buffer[i*2] = buffer[i*2+1] = rev->tick(instrument->tick() * g_output);
 //        buffer[i*2] = buffer[i*2+1] = instrument->tick() * adsr->tick();
 //        buffer[i*2] = buffer[i*2+1] = instrument->tick();
         
@@ -143,17 +152,30 @@ int touchToFreq(float x, float y, bool vibrato = false) {
     CGFloat screenHeight = screenRect.size.height;
     x = screenWidth - x;
     y = screenHeight - y;
+    
+    // compute midi
     int midi;
-    int octaveOffset = lowestNote + scale[0];
+    int octaveOffset = lowestNote;
     int notesPerStrip = (int)scale.size();
     float stripWidth = screenHeight / notesPerStrip;
     int offsetPosition = y / stripWidth;
     midi = octaveOffset + scale[offsetPosition] + ((int)(x / (screenWidth / 2)) * 12);
-    if (vibrato) {
-        float fingerOffset = fmodf(y, stripWidth) - (stripWidth / 2);
-//        NSLog(@"vibrato: %f", fingerOffset);
-        return MoFun::midi2freq(midi) + (MoFun::midi2freq(g_vibratoRange) * (fingerOffset / (stripWidth / 2)) * g_vibratoSensitivity);
-    }
+    NSLog(@"midi: %d", midi);
+    
+    // compute vibrato
+    float scaleWidth = (screenWidth / 2);
+    float xOffset = fmodf(x, scaleWidth);
+    float vibratoAmt = xOffset / scaleWidth;
+    g_vibratoGain = 100.0 * vibratoAmt + 28.0;
+    g_vibratoRate = 100.0 * vibratoAmt;
+//    instrument->controlChange(2, 128.0 * vibratoAmt);
+//    instrument->controlChange(4, 128.0 * vibratoAmt);
+    NSLog(@"vibrato: %f", vibratoAmt);
+//    if (vibrato) {
+//        float fingerOffset = fmodf(y, stripWidth) - (stripWidth / 2);
+////        NSLog(@"vibrato: %f", fingerOffset);
+//        return MoFun::midi2freq(midi) + (MoFun::midi2freq(g_vibratoRange) * (fingerOffset / (stripWidth / 2)) * g_vibratoSensitivity);
+//    }
     return MoFun::midi2freq(midi);
 }
 
@@ -204,13 +226,13 @@ void touch_callback( NSSet * touches, UIView * view,
                 // ended or cancelled
             case UITouchPhaseEnded:
             {
-                g_f = 0;
+//                g_f = 0;
 //                NSLog( @"touch ended... %f %f", pt.x, pt.y );
                 break;
             }
             case UITouchPhaseCancelled:
             {
-                g_f = 0;
+//                g_f = 0;
 //                instrument->noteOff(0.5);
 //                NSLog( @"touch cancelled... %f %f", pt.x, pt.y );
                 break;
@@ -248,15 +270,32 @@ void touch_callback( NSSet * touches, UIView * view,
     adsr->setReleaseTime(g_release);
     adsr->setAttackTime(g_attack);
     
+    rev = new stk::JCRev(g_revDecay);
+    
     // init scale
-    scale.push_back(0);
+//    scale.push_back(0);
+////    scale.push_back(1);
+//    scale.push_back(2);
+////    scale.push_back(3);
+//    scale.push_back(4);
+//    scale.push_back(5);
+////    scale.push_back(6);
+//    scale.push_back(7);
+////    scale.push_back(8);
+//    scale.push_back(9);         // A
+////    scale.push_back(10);
+//    scale.push_back(11);
+//    scale.push_back(12);
+
     scale.push_back(2);
     scale.push_back(4);
-    scale.push_back(5);
+    scale.push_back(6);
     scale.push_back(7);
     scale.push_back(9);
     scale.push_back(11);
-    scale.push_back(12);
+    scale.push_back(13);
+    scale.push_back(14);
+
     
     
     bool result = MoAudio::init( SRATE, 384, 2 );
@@ -277,7 +316,12 @@ void touch_callback( NSSet * touches, UIView * view,
         // bail out
         return;
     }
+    
+    // add drawing code
+    
 }
+
+
 
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
