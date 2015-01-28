@@ -16,6 +16,7 @@
 
 // stdlib
 #import <vector>
+#import <string>
 
 // custom
 #import "ViewController.h"
@@ -23,17 +24,25 @@
 #import "mo-audio.h"
 #import "mo-touch.h"
 #import "mo-fun.h"
+#import "mo-gfx.h"
+
+#import "Globals.h"
 
 // global define
 #define SRATE 44100
 // global variables
 Float32 g_t = 0.0;
-Float32 g_f = 0;
 Float32 g_micGain = 0;
 
-int lowestNote = 4 * 12;
+int g_octave = 4;
+int g_highestOctave = 6;
+int g_lowestOctave = 1;
+int lowestNote = g_octave * 12;
 float micCutoff = 0.0001;
 float gainBoost = 0;
+
+float g_freqSlewRate = 0.5;
+Vector3D g_freqSlewer = Vector3D(MoFun::midi2freq(lowestNote), MoFun::midi2freq(lowestNote), g_freqSlewRate);
 
 stk::Clarinet *instrument;
 stk::ADSR *adsr;
@@ -51,13 +60,27 @@ float g_lastInput = 0;
 float g_output = 0;
 float g_lastOutput = 0;
 
+// scale
+std::vector<int> majorScale = {0, 2, 4, 5, 7, 9, 11, 12};
+std::vector<int> minorScale = {0, 2, 3, 5, 7, 8, 10, 12};
+bool g_scaleIsMajor = true;
+int g_scaleRoot = 2;
+std::vector<std::string> scaleRoots = {
+    "C",
+    "C#",
+    "D",
+    "D#",
+    "E",
+    "F",
+    "F#",
+    "G",
+    "G#",
+    "A",
+    "A#",
+    "B"
+};
+
 bool g_isBlowing = false;
-
-std::vector <int> scale;
-
-@interface ViewController ()
-
-@end
 
 
 @interface ViewController ()
@@ -68,22 +91,15 @@ std::vector <int> scale;
 // the audio callback
 void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
 {
-//    if (g_f != 0)
-//        adsr->keyOn();
-//    else
-//        adsr->keyOff();
+    g_freqSlewer.slew = g_freqSlewRate;
+    g_freqSlewer.interp();
+//    NSLog(@"freq: %f", g_freqSlewer.value);
     
-//    if( !g_isBlowing )
-//    {
-//        instrument->startBlowing(0, 0.5);
-//        g_isBlowing = true;
-//    }
+    rev->setT60(g_revDecay);
     
-//    if( g_f > .1 ) instrument->setFrequency( g_f );
-
-    instrument->setFrequency( g_f );
+    instrument->setFrequency( g_freqSlewer.value );
     if (g_output > micCutoff)
-        instrument->startBlowing(1, 1);
+        instrument->startBlowing(1, 1);      // amplitude, rate
     else
         instrument->stopBlowing(0.25);
     
@@ -91,92 +107,53 @@ void the_callback( Float32 * buffer, UInt32 frameSize, void * userData )
     instrument->controlChange(11, g_vibratoRate);
     
 //    NSLog( @"output: %f", g_output );
+    
     // loop over frames
     for( UInt32 i = 0; i < frameSize; i++ )
     {
-        // instrument params
-//        instrument->noteOn(g_f, (g_micGain / 50));
-        
         // mic monitor
         g_lastOutput = g_output;
         g_input = buffer[i*2] * buffer[i*2]; // + fabs(buffer[i*2+1]);
         g_output = g_input * sqrt((1 - g_factor)) + (g_factor * g_lastOutput);
-//        NSLog(@"gain: %f", g_input);
-
-        
-        // input monitor
-//        float inputAggregator = 0;
-        
-        float gain = g_output;
-        
-//        // instrument params
-//        if ((gain > micCutoff) && (g_f != 0) && !g_isBlowing) {
-////            float _gain = gainBoost + gain - micCutoff;
-////                    NSLog( @"gain: %f", _gain);
-//            
-////            instrument->setFrequency(g_f);
-//            instrument->startBlowing( 1, .1 );
-//            //instrument->startBlowing(_gain, 0.1);
-////            instrument->noteOn(g_f, 1);
-//            g_isBlowing = true;
-//        }
-//        else {
-//            instrument->stopBlowing(0.9);
-//            g_isBlowing = false;
-////            instrument->noteOff(0);
-//        }
         
         // synthesize
         buffer[i*2] = buffer[i*2+1] = rev->tick(instrument->tick() * g_output);
-//        buffer[i*2] = buffer[i*2+1] = instrument->tick() * adsr->tick();
-//        buffer[i*2] = buffer[i*2+1] = instrument->tick();
         
         // advance time
         g_t += 1.0;
     }
-//    g_micGain = inputAggregator + (0.75 * g_micGain);
 }
 
-//float midiToFreq(int midi) {
-////    float midiNotes[127];
-//    float a4 = 440; // a is 440 hz...
-//    float freq = pow(2.0, (midi - 69) / 12.0) * a4;;
-////    NSLog( @"midi: %d", midi );
-////    NSLog( @"freq: %f", freq);
-//    return freq;
-//}
-
-int touchToFreq(float x, float y, bool vibrato = false) {
-    CGRect screenRect = [[UIScreen mainScreen] bounds];
-    CGFloat screenWidth = screenRect.size.width;
-    CGFloat screenHeight = screenRect.size.height;
-    x = screenWidth - x;
-    y = screenHeight - y;
+void touchToFreq(float x, float y, bool vibrato = false) {
+//    CGRect screenRect = [[UIScreen mainScreen] bounds];
+    CGFloat screenWidth = Globals::fingerboardWidth;
+    CGFloat screenHeight = Globals::fingerboardHeight;
+    
+    // touch outside fingerboard area
+    if (x >= screenWidth)
+        return;
     
     // compute midi
     int midi;
-    int octaveOffset = lowestNote;
-    int notesPerStrip = (int)scale.size();
+    int octaveOffset = g_octave * 12;
+    int notesPerStrip = (int)Globals::scale.size();
     float stripWidth = screenHeight / notesPerStrip;
     int offsetPosition = y / stripWidth;
-    midi = octaveOffset + scale[offsetPosition] + ((int)(x / (screenWidth / 2)) * 12);
-    NSLog(@"midi: %d", midi);
+    midi = octaveOffset + Globals::scale[offsetPosition] + ((int)(x / (screenWidth / 2)) * 12);
+    Globals::currentNote.octave = (int)(x / (screenWidth / 2));
+    Globals::currentNote.key = offsetPosition;
+//    NSLog(@"midi: %d", midi);
     
     // compute vibrato
     float scaleWidth = (screenWidth / 2);
     float xOffset = fmodf(x, scaleWidth);
     float vibratoAmt = xOffset / scaleWidth;
-    g_vibratoGain = 100.0 * vibratoAmt + 28.0;
-    g_vibratoRate = 100.0 * vibratoAmt;
-//    instrument->controlChange(2, 128.0 * vibratoAmt);
-//    instrument->controlChange(4, 128.0 * vibratoAmt);
-    NSLog(@"vibrato: %f", vibratoAmt);
-//    if (vibrato) {
-//        float fingerOffset = fmodf(y, stripWidth) - (stripWidth / 2);
-////        NSLog(@"vibrato: %f", fingerOffset);
-//        return MoFun::midi2freq(midi) + (MoFun::midi2freq(g_vibratoRange) * (fingerOffset / (stripWidth / 2)) * g_vibratoSensitivity);
-//    }
-    return MoFun::midi2freq(midi);
+    g_vibratoGain = 90.0 * vibratoAmt + 38.0;
+    g_vibratoRate = 75.0 * vibratoAmt;
+
+    g_freqSlewer.goal = MoFun::midi2freq(midi);
+    return;
+//    return MoFun::midi2freq(midi);
 }
 
 // touch callback
@@ -189,7 +166,7 @@ void touch_callback( NSSet * touches, UIView * view,
     CGPoint prev;
     
     // number of touches in set
-    NSUInteger n = [touches count];
+//    NSUInteger n = [touches count];
 //    NSLog( @"total number of touches: %d", (int)n );
 
     
@@ -207,8 +184,7 @@ void touch_callback( NSSet * touches, UIView * view,
             case UITouchPhaseBegan:
             {
 //                NSLog( @"touch began... %f %f", pt.x, pt.y );
-//                instrument->noteOn(touchToFreq(pt.x, pt.y), g_micGain / 100);
-                g_f = touchToFreq(pt.x, pt.y);
+                touchToFreq(pt.x, pt.y);
                 break;
             }
             case UITouchPhaseStationary:
@@ -219,21 +195,17 @@ void touch_callback( NSSet * touches, UIView * view,
             case UITouchPhaseMoved:
             {
 //                NSLog( @"touch moved... %f %f", pt.x, pt.y );
-                g_f = touchToFreq(pt.x, pt.y, true);
-//                instrument->noteOn(touchToFreq(pt.x, pt.y), g_micGain / 100);
+                touchToFreq(pt.x, pt.y, true);
                 break;
             }
                 // ended or cancelled
             case UITouchPhaseEnded:
             {
-//                g_f = 0;
 //                NSLog( @"touch ended... %f %f", pt.x, pt.y );
                 break;
             }
             case UITouchPhaseCancelled:
             {
-//                g_f = 0;
-//                instrument->noteOff(0.5);
 //                NSLog( @"touch cancelled... %f %f", pt.x, pt.y );
                 break;
             }
@@ -241,6 +213,7 @@ void touch_callback( NSSet * touches, UIView * view,
             default:
                 break;
         }
+        break;
     }
 }
 
@@ -251,6 +224,24 @@ void touch_callback( NSSet * touches, UIView * view,
 - (void)viewDidLoad
 {
     [super viewDidLoad];
+    
+    // rotate UI elements
+    CGAffineTransform trans = CGAffineTransformMakeRotation(M_PI * -0.5);
+    _portamentoSlider.transform = trans;
+    
+    trans = CGAffineTransformMakeRotation(M_PI * 0.5);
+    _portamentoLabel.transform = trans;
+    
+    _octaveStepperLabel.transform = trans;
+
+    _reverbLabel.transform = trans;
+    _reverbSlider.transform = trans;
+    
+    _scaleModeSwitch.transform = trans;
+    _majorLabel.transform = trans;
+    _minorLabel.transform = trans;
+    
+    _scaleRootLabel.transform = trans;
     
     NSLog( @"initializing MOTouch" );
     
@@ -272,31 +263,9 @@ void touch_callback( NSSet * touches, UIView * view,
     
     rev = new stk::JCRev(g_revDecay);
     
-    // init scale
-//    scale.push_back(0);
-////    scale.push_back(1);
-//    scale.push_back(2);
-////    scale.push_back(3);
-//    scale.push_back(4);
-//    scale.push_back(5);
-////    scale.push_back(6);
-//    scale.push_back(7);
-////    scale.push_back(8);
-//    scale.push_back(9);         // A
-////    scale.push_back(10);
-//    scale.push_back(11);
-//    scale.push_back(12);
-
-    scale.push_back(2);
-    scale.push_back(4);
-    scale.push_back(6);
-    scale.push_back(7);
-    scale.push_back(9);
-    scale.push_back(11);
-    scale.push_back(13);
-    scale.push_back(14);
-
-    
+    // init scale (to D major)
+    for (int i = 0; i < majorScale.size(); i++)
+        Globals::scale.push_back(g_scaleRoot + majorScale[i]);
     
     bool result = MoAudio::init( SRATE, 384, 2 );
     if( !result )
@@ -328,5 +297,71 @@ void touch_callback( NSSet * touches, UIView * view,
     // Dispose of any resources that can be recreated.
 }
 
+- (IBAction)portamentoSliderChanged:(id)sender {
+    g_freqSlewRate = self.portamentoSlider.value;
+}
+
+- (IBAction)octaveUp:(id)sender {
+    if (g_octave < g_highestOctave)
+        g_octave++;
+}
+
+- (IBAction)octaveDown:(id)sender {
+    if (g_octave > g_lowestOctave)
+        g_octave--;
+}
+
+- (IBAction)reverbSliderChanged:(id)sender {
+    g_revDecay = self.reverbSlider.value;
+}
+
+- (IBAction)scaleModeChanged:(id)sender {
+    Globals::scale.clear();
+    if (self.scaleModeSwitch.isOn) {
+        g_scaleIsMajor = true;
+        for (int i = 0; i < majorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + majorScale[i]);
+    }
+    else {
+        g_scaleIsMajor = false;
+        for (int i = 0; i < minorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + minorScale[i]);
+    }
+}
+
+- (IBAction)scaleRootUp:(id)sender {
+    g_scaleRoot = (g_scaleRoot + 1) % scaleRoots.size();
+    
+    self.scaleRootLabel.text = [NSString stringWithCString:scaleRoots[g_scaleRoot].c_str() encoding:[NSString defaultCStringEncoding]];
+    
+    Globals::scale.clear();
+    if (g_scaleIsMajor) {
+        for (int i = 0; i < majorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + majorScale[i]);
+    }
+    else {
+        for (int i = 0; i < minorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + minorScale[i]);
+    }
+}
+
+- (IBAction)scaleRootDown:(id)sender {
+    if (g_scaleRoot == 0)
+        g_scaleRoot = (int)(scaleRoots.size() - 1);
+    else
+        g_scaleRoot--;
+    
+    self.scaleRootLabel.text = [NSString stringWithCString:scaleRoots[g_scaleRoot].c_str() encoding:[NSString defaultCStringEncoding]];
+    
+    Globals::scale.clear();
+    if (g_scaleIsMajor) {
+        for (int i = 0; i < majorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + majorScale[i]);
+    }
+    else {
+        for (int i = 0; i < minorScale.size(); i++)
+            Globals::scale.push_back(g_scaleRoot + minorScale[i]);
+    }
+}
 
 @end
